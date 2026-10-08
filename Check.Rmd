@@ -9,22 +9,58 @@ output: html_document
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
-## R Markdown
+```{r libraries}
+library(haven); library(dplyr); library(tidyr); library(purrr); library(tibble)
+library(lme4); library(lmerTest); library(psych); library(boot); library(car)
+HAS_PERF <- requireNamespace("performance", quietly = TRUE)   # optional; only used for R2
 
-This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+# NA-safe standardizer (base scale() returns all-NA if any element is NA)
+z <- function(x) (x - mean(x, na.rm = TRUE)) / sd(x, na.rm = TRUE)
 
-When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+tidy_row <- function(co, rn, term, outcome = NA_character_,
+                     sdx = NA_real_, sdy = NA_real_) {
+  e   <- co[rn, "Estimate"]
+  s   <- co[rn, "Std. Error"]
+  p   <- co[rn, grep("^Pr", colnames(co))[1]]
+  tv  <- if ("t value" %in% colnames(co)) co[rn, "t value"] else NA_real_
+  dfv <- if ("df"      %in% colnames(co)) co[rn, "df"]      else NA_real_
+  tibble(outcome = outcome, term = term, b = e, se = s,
+         lo = e - 1.96 * s, hi = e + 1.96 * s,
+         t = unname(tv), df = unname(dfv), p = p,
+         beta = if (is.na(sdx) || is.na(sdy)) NA_real_ else unname(e * sdx / sdy))
+}
 
-```{r cars}
-summary(cars)
+# Random-effects variance components and R2 for a fitted lmer.
+model_stats <- function(m, outcome = NA_character_, label = "") {
+  vc <- as.data.frame(lme4::VarCorr(m))
+  r2 <- if (HAS_PERF) tryCatch(performance::r2(m), error = function(e) NULL) else NULL
+  tibble(outcome = outcome, model = label,
+         n_obs = nobs(m), n_persons = unname(lme4::ngrps(m)[1]),
+         r2_marginal    = if (is.null(r2)) NA_real_ else as.numeric(r2$R2_marginal),
+         r2_conditional = if (is.null(r2)) NA_real_ else as.numeric(r2$R2_conditional),
+         sd_intercept = vc$sdcor[vc$grp != "Residual"][1],
+         sd_slope     = if (sum(vc$grp != "Residual") > 1) vc$sdcor[vc$grp != "Residual"][2] else NA_real_,
+         sd_residual  = vc$sdcor[vc$grp == "Residual"][1],
+         singular     = lme4::isSingular(m))
+}
 ```
 
-## Including Plots
+## 0. Load + factor definitions
 
-You can also embed plots, for example:
+```{r load}
+nsde2_raw      <- read_sav("data/M2_P2_DAILY_DATA_N=2022_08-04-10.sav")
+biomarker2_raw <- read_sav("data/M2_BIO_AGGREGATE_N1255_20240405.sav")
+survey2_raw    <- read_sav("data/M2_P1_SURVEY_N4963_20200720.sav")   # core survey; race (B1PF7A)
 
-```{r pressure, echo=FALSE}
-plot(pressure)
+# Adopted 4-factor structure (from the EFA in §1). Anger = irritable/upset/angry/frustrated.
+emp_factor <- tribble(
+  ~item,  ~factor,
+  "pa7","POS","pa8","POS","pa9","POS","pa10","POS","pa11","POS","pa12","POS",
+  "pa21","POS","pa22","POS","pa23","POS","pa24","POS","pa25","POS","pa26","POS","pa27","POS",
+  "na1","ANX","na2","ANX","na15","ANX",
+  "na16","ANG","na18","ANG","na19","ANG","na20","ANG",
+  "na3","DEP","na4","DEP","na5","DEP","na6","DEP","na13","DEP","na17","DEP")
+outcomes <- c("POS", "ANX", "ANG", "DEP")
+EMOTION_MISS <- c(7,8,9); MISS <- c(7,8,9)
+mapvec <- setNames(paste0("B2DC", readr::parse_number(emp_factor$item)), emp_factor$item)
 ```
-
-Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
